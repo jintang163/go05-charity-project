@@ -193,7 +193,7 @@ func SeedDemo(ctx context.Context, st Store, hasher *auth.PasswordHasher) error 
 		OccurredAt:  expAt,
 		CreatedAt:   expAt,
 	}
-	if _, _, err := st.ApplyPublishedExpense(ctx, exp, proj, expEntry); err != nil {
+	if _, _, err := st.ApplyPublishedExpense(ctx, exp, proj, expEntry, policy.MaxAdminFeeRateBP); err != nil {
 		return err
 	}
 	if _, err := st.CreateProgress(ctx, model.ProgressReport{

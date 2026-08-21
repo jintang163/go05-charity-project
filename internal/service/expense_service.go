@@ -113,7 +113,7 @@ func (s *ExpenseService) Publish(ctx context.Context, actor model.User, id strin
 		OccurredAt:  e.OccurredAt,
 		CreatedAt:   now,
 	}
-	saved, proj, err := s.store.ApplyPublishedExpense(ctx, e, p, entry)
+	saved, proj, err := s.store.ApplyPublishedExpense(ctx, e, p, entry, s.limits.AdminFeeRateBP)
 	if err != nil {
 		return model.PublicExpense{}, err
 	}
