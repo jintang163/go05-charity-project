@@ -87,7 +87,15 @@ type Store interface {
 	// both pass the cap and land.
 	ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt, dailyCapCents int64) (model.Donation, model.Project, error)
 	ApplyRefund(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry) (model.Donation, model.Project, error)
-	ApplyPublishedExpense(ctx context.Context, e model.Expense, p model.Project, entry model.LedgerEntry) (model.Expense, model.Project, error)
+	// ApplyPublishedExpense atomically publishes an expense under the store
+	// write lock. When adminFeeRateBP > 0 and the expense is an admin fee, it
+	// re-checks the project's already-published admin-fee total (excluding this
+	// expense) plus the new amount against the allowed cap BEFORE any state
+	// mutation; exceeding it returns ErrAdminFeeExceeded with nothing persisted.
+	// This collapses the check-then-act in ExpenseService.Publish into one
+	// locked operation so two concurrent admin-fee publishes can never both pass
+	// the cap and land.
+	ApplyPublishedExpense(ctx context.Context, e model.Expense, p model.Project, entry model.LedgerEntry, adminFeeRateBP int) (model.Expense, model.Project, error)
 	ApplyMatching(ctx context.Context, p model.Project, entry model.LedgerEntry) (model.Project, error)
 	ApplyAdjust(ctx context.Context, p model.Project, entry model.LedgerEntry) (model.Project, error)
 

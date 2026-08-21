@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go05-charity-project/internal/model"
+	"go05-charity-project/internal/money"
 )
 
 func (m *MemoryStore) CreateDonation(ctx context.Context, d model.Donation) (model.Donation, error) {
@@ -322,7 +323,7 @@ func (m *MemoryStore) ApplyRefund(ctx context.Context, d model.Donation, p model
 	return d, curP, nil
 }
 
-func (m *MemoryStore) ApplyPublishedExpense(ctx context.Context, e model.Expense, p model.Project, entry model.LedgerEntry) (model.Expense, model.Project, error) {
+func (m *MemoryStore) ApplyPublishedExpense(ctx context.Context, e model.Expense, p model.Project, entry model.LedgerEntry, adminFeeRateBP int) (model.Expense, model.Project, error) {
 	_ = ctx
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -333,6 +334,23 @@ func (m *MemoryStore) ApplyPublishedExpense(ctx context.Context, e model.Expense
 	available := curP.RaisedCents - curP.SpentCents
 	if e.AmountCents > available {
 		return model.Expense{}, model.Project{}, model.ErrInsufficientBalance
+	}
+	// Re-check the admin-fee cap under the write lock, together with the
+	// ledger mutation, so a concurrent admin-fee publish cannot also pass the
+	// cap. The already-published admin-fee total is recomputed here from the
+	// ledger (excluding this expense, which is not persisted yet); comparing
+	// that plus the new amount against the cap BEFORE any mutation collapses
+	// the check-then-act in ExpenseService.Publish into one locked operation.
+	if adminFeeRateBP > 0 && e.Category == model.ExpAdminFee {
+		var current int64
+		for _, le := range m.ledgers {
+			if le.ProjectID == curP.ID && le.Type == model.LedgerExpense && le.Category == string(model.ExpAdminFee) {
+				current += le.AmountCents
+			}
+		}
+		if !money.CanAddAdminFee(current, e.AmountCents, curP.RaisedCents, adminFeeRateBP) {
+			return model.Expense{}, model.Project{}, model.ErrAdminFeeExceeded
+		}
 	}
 	if entry.ID == "" {
 		entry.ID = m.idGen(model.LedgerIDPrefix)
