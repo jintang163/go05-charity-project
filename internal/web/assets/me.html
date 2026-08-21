@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>我的爱心</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar"><div class="brand">我的</div><div class="nav" id="userbar"></div></div>
+  <div class="layout">
+    <div class="card"><h2>我的捐款</h2><div class="list" id="dons"></div></div>
+    <div class="card"><h2>关注的项目</h2><div class="list" id="follows"></div></div>
+    <div class="card"><h2>通知</h2><div class="list" id="notes"></div></div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    if (!requireLogin()) {}
+    (async () => {
+      const me = await currentMe(); fillUserBar(me);
+      const dons = await api("/api/me/donations");
+      $("dons").innerHTML = dons.map(d => `<div class="post">¥${yuan(d.amount_cents)} · ${statusLabel(d.status)} · ${d.channel}
+        ${d.receipt_code? " · 收据 "+d.receipt_code:""}
+        ${d.status==="confirmed"?`<div class="actions"><button class="btn" onclick="refund('${d.id}')">申请退款</button></div>`:""}
+      </div>`).join("") || "<p class='subtitle'>暂无捐款</p>";
+      const fl = await api("/api/me/follows");
+      $("follows").innerHTML = fl.map(p => `<div class="post"><a href="/projects/${p.id}">${p.title}</a> · ${statusLabel(p.status)}</div>`).join("") || "<p class='subtitle'>暂无关注</p>";
+      const notes = await api("/api/me/notifications");
+      $("notes").innerHTML = notes.map(n => `<div class="post"><strong>${n.title}</strong><p>${n.body}</p></div>`).join("") || "<p class='subtitle'>暂无通知</p>";
+    })().catch(e => { if (String(e.message).includes("unauthorized")) location.href="/login"; });
+    async function refund(id) {
+      if (!confirm("确认申请退款？")) return;
+      try { await api("/api/donations/"+id+"/refund", {method:"POST", body:"{}"}); location.reload(); }
+      catch(e){ alert(e.message); }
+    }
+  </script>
+</body>
+</html>

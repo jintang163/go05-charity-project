@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>募捐广场</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">慈善项目 · 广场</div>
+    <div class="nav" id="userbar"></div>
+  </div>
+  <div class="layout">
+    <div class="card">
+      <div class="card-head">
+        <h2>在募项目</h2>
+        <div class="filters">
+          <select id="cat"><option value="">全部分类</option></select>
+          <input id="q" placeholder="关键词" />
+          <button class="btn" id="search">筛选</button>
+        </div>
+      </div>
+      <div class="list" id="list"></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    if (!requireLogin()) {}
+    let me;
+    (async () => {
+      me = await currentMe();
+      fillUserBar(me);
+      const enums = await api("/api/categories");
+      enums.categories.forEach(c => {
+        const o = document.createElement("option"); o.value=c.id; o.textContent=c.name; $("cat").appendChild(o);
+      });
+      await load();
+    })().catch(e => { if (String(e.message).includes("unauthorized")) location.href="/login"; });
+
+    async function load() {
+      const q = $("q").value, cat = $("cat").value;
+      const qs = new URLSearchParams({open:"true"});
+      if (q) qs.set("q", q);
+      if (cat) qs.set("category", cat);
+      const items = await api("/api/projects?" + qs.toString());
+      $("list").innerHTML = items.length ? items.map(p => `
+        <div class="post">
+          <h3><a href="/projects/${p.id}">${p.title}</a> <span class="tag">${catLabel(p.category)}</span></h3>
+          <p class="meta">${p.beneficiary} · 已筹 ¥${yuan(p.raised_cents)} / 目标 ¥${yuan(p.goal_cents)} · ${p.donor_count} 人 · 透明度 ${p.transparency_score}</p>
+          <div class="bar"><i style="width:${p.progress_percent}%"></i></div>
+        </div>`).join("") : "<p class='subtitle'>暂无在募项目</p>";
+    }
+    $("search").onclick = load;
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>管理后台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar"><div class="brand">管理后台</div><div class="nav" id="userbar"></div></div>
+  <div class="layout">
+    <div class="card"><h2>全局统计</h2><div class="stats-grid" id="stats"></div></div>
+    <div class="card"><h2>待审项目</h2><div class="list" id="pending"></div></div>
+    <div class="card"><h2>机构核验</h2><div class="list" id="orgs"></div></div>
+    <div class="card"><h2>用户</h2><div class="list" id="users"></div></div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    if (!requireLogin()) {}
+    (async () => {
+      const me = await currentMe(); fillUserBar(me);
+      const st = await api("/api/stats");
+      $("stats").innerHTML = `
+        <div class="stat"><div class="k">用户</div><div class="v">${st.users_total}</div></div>
+        <div class="stat"><div class="k">已核验机构</div><div class="v">${st.orgs_verified}</div></div>
+        <div class="stat"><div class="k">本月筹款</div><div class="v">¥${yuan(st.month_raised_cents)}</div></div>
+        <div class="stat"><div class="k">本月支出</div><div class="v">¥${yuan(st.month_spent_cents)}</div></div>
+        <div class="stat"><div class="k">待审</div><div class="v">${st.pending_review}</div></div>
+        <div class="stat"><div class="k">平均透明度</div><div class="v">${st.avg_transparency}</div></div>`;
+      const projects = await api("/api/projects?status=pending_review&include_draft=true");
+      $("pending").innerHTML = projects.map(p => `<div class="post"><h3>${p.title}</h3>
+        <div class="actions"><button class="btn btn-primary" onclick="approve('${p.id}')">通过</button>
+        <button class="btn" onclick="reject('${p.id}')">驳回</button></div></div>`).join("") || "<p class='subtitle'>无待审</p>";
+      const orgs = await api("/api/orgs");
+      $("orgs").innerHTML = orgs.map(o => `<div class="post"><strong>${o.name}</strong> · ${o.verify_status}
+        ${o.verify_status!=="verified"?`<div class="actions"><button class="btn btn-primary" onclick="verify('${o.id}',true)">核验</button>
+        <button class="btn" onclick="verify('${o.id}',false)">拒绝</button></div>`:""}</div>`).join("");
+      const users = await api("/api/users");
+      $("users").innerHTML = users.map(u => `<div class="post">${u.username} · ${u.role} · ${u.status}
+        ${u.role!=="admin"?`<button class="btn" onclick="freeze('${u.id}')">冻结</button>
+        <button class="btn" onclick="unfreeze('${u.id}')">解冻</button>`:""}</div>`).join("");
+    })().catch(e => { if (String(e.message).includes("unauthorized")) location.href="/login"; });
+    async function approve(id){ await api("/api/projects/"+id+"/approve",{method:"POST",body:"{}"}); location.reload(); }
+    async function reject(id){ const reason=prompt("驳回原因")||"资料不完整"; await api("/api/projects/"+id+"/reject",{method:"POST",body:JSON.stringify({reason})}); location.reload(); }
+    async function verify(id,ok){ await api("/api/orgs/"+id+"/verify",{method:"POST",body:JSON.stringify({approve:ok,note:ok?"ok":"资料不足"})}); location.reload(); }
+    async function freeze(id){ await api("/api/users/"+id+"/freeze",{method:"POST",body:JSON.stringify({ban:false})}); location.reload(); }
+    async function unfreeze(id){ await api("/api/users/"+id+"/unfreeze",{method:"POST",body:"{}"}); location.reload(); }
+  </script>
+</body>
+</html>

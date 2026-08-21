@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>机构工作台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar"><div class="brand">机构工作台</div><div class="nav" id="userbar"></div></div>
+  <div class="layout">
+    <div class="card"><h2>本机构统计</h2><div class="stats-grid" id="stats"></div></div>
+    <div class="card">
+      <h2>发布项目</h2>
+      <form id="create" class="form">
+        <label class="field"><span>标题</span><input name="title" required /></label>
+        <label class="field"><span>介绍</span><textarea name="content" rows="3" required></textarea></label>
+        <div class="row">
+          <label class="field"><span>分类</span><select name="category" id="cat"></select></label>
+          <label class="field"><span>目标（元）</span><input name="goal" type="number" value="50000" required /></label>
+        </div>
+        <label class="field"><span>受益对象</span><input name="beneficiary" required /></label>
+        <button class="btn btn-primary" type="submit">保存草稿并提交审核</button>
+        <p class="err" id="err"></p>
+      </form>
+    </div>
+    <div class="card"><h2>我的项目</h2><div class="list" id="list"></div></div>
+    <div class="card">
+      <h2>公示支出</h2>
+      <form id="exp" class="form">
+        <label class="field"><span>项目 ID</span><input name="project_id" id="exp_pid" required /></label>
+        <label class="field"><span>标题</span><input name="title" required /></label>
+        <div class="row">
+          <label class="field"><span>类目</span><select name="category" id="expcat"></select></label>
+          <label class="field"><span>金额（元）</span><input name="yuan" type="number" step="0.01" required /></label>
+        </div>
+        <label class="field"><span>受益方</span><input name="beneficiary" required /></label>
+        <button class="btn btn-primary" type="submit">登记并公示</button>
+        <p class="err" id="experr"></p>
+      </form>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    if (!requireLogin()) {}
+    (async () => {
+      const me = await currentMe(); fillUserBar(me);
+      const enums = await api("/api/categories");
+      enums.categories.forEach(c => { const o=document.createElement("option"); o.value=c.id; o.textContent=c.name; $("cat").appendChild(o); });
+      enums.expense_categories.forEach(c => { const o=document.createElement("option"); o.value=c.id; o.textContent=c.name; $("expcat").appendChild(o); });
+      try {
+        const st = await api("/api/stats/org");
+        $("stats").innerHTML = `
+          <div class="stat"><div class="k">在办项目</div><div class="v">${st.open_projects}</div></div>
+          <div class="stat"><div class="k">待确认捐款</div><div class="v">${st.pending_offline}</div></div>
+          <div class="stat"><div class="k">可用余额</div><div class="v">¥${yuan(st.available_cents)}</div></div>`;
+      } catch(e) {}
+      const items = await api("/api/projects?include_draft=true");
+      $("list").innerHTML = items.map(p => `<div class="post">
+        <h3><a href="/projects/${p.id}">${p.title}</a> <span class="tag">${statusLabel(p.status)}</span></h3>
+        <p class="meta">已筹 ¥${yuan(p.raised_cents)} · 已支 ¥${yuan(p.spent_cents)} · 可用 ¥${yuan(p.available_cents)}</p>
+        <div class="actions">
+          ${p.status==="draft"?`<button class="btn" onclick="submitP('${p.id}')">提交审核</button>`:""}
+          ${p.status==="published"?`<button class="btn" onclick="closeP('${p.id}')">关闭募捐</button>`:""}
+          ${p.status==="closed"?`<button class="btn" onclick="doneP('${p.id}')">结项</button>`:""}
+        </div></div>`).join("") || "<p class='subtitle'>暂无项目</p>";
+      if (items[0]) $("exp_pid").value = items[0].id;
+    })().catch(e => { if (String(e.message).includes("unauthorized")) location.href="/login"; });
+
+    $("create").onsubmit = async (e) => {
+      e.preventDefault(); $("err").textContent="";
+      const fd = new FormData($("create"));
+      const now = new Date(); const end = new Date(now.getTime()+30*864e5);
+      try {
+        await api("/api/projects", {method:"POST", body: JSON.stringify({
+          title: fd.get("title"), content: fd.get("content"), category: fd.get("category"),
+          beneficiary: fd.get("beneficiary"), goal_cents: Math.round(Number(fd.get("goal"))*100),
+          allow_over_goal: true, allow_anonymous: true, allow_offline: true,
+          start_at: now.toISOString(), end_at: end.toISOString(), submit: true
+        })});
+        location.reload();
+      } catch(ex){ $("err").textContent=ex.message; }
+    };
+    $("exp").onsubmit = async (e) => {
+      e.preventDefault(); $("experr").textContent="";
+      const fd = new FormData($("exp"));
+      try {
+        const created = await api("/api/projects/"+fd.get("project_id")+"/expenses", {method:"POST", body: JSON.stringify({
+          title: fd.get("title"), category: fd.get("category"),
+          amount_cents: Math.round(Number(fd.get("yuan"))*100),
+          beneficiary: fd.get("beneficiary"), occurred_at: new Date().toISOString()
+        })});
+        await api("/api/expenses/"+created.id+"/publish", {method:"POST", body:"{}"});
+        location.reload();
+      } catch(ex){ $("experr").textContent=ex.message; }
+    };
+    async function submitP(id){ await api("/api/projects/"+id+"/submit",{method:"POST",body:"{}"}); location.reload(); }
+    async function closeP(id){ await api("/api/projects/"+id+"/close",{method:"POST",body:"{}"}); location.reload(); }
+    async function doneP(id){ try{ await api("/api/projects/"+id+"/complete",{method:"POST",body:"{}"}); location.reload();}catch(e){alert(e.message);} }
+  </script>
+</body>
+</html>

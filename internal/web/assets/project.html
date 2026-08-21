@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>项目详情</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">项目详情</div>
+    <div class="nav" id="userbar"></div>
+  </div>
+  <div class="layout">
+    <div class="card" id="info"></div>
+    <div class="card">
+      <h2>捐一笔</h2>
+      <form id="donate" class="form">
+        <div class="row">
+          <label class="field"><span>金额（元）</span><input name="yuan" type="number" step="0.01" min="1" value="100" required /></label>
+          <label class="field"><span>渠道</span>
+            <select name="channel"><option value="wechat">微信</option><option value="alipay">支付宝</option><option value="bank">银行</option><option value="offline">线下</option></select>
+          </label>
+        </div>
+        <label class="field"><span>留言</span><input name="message" maxlength="140" /></label>
+        <label><input type="checkbox" name="anonymous" /> 匿名</label>
+        <button class="btn btn-primary" type="submit">确认捐款</button>
+        <p class="err" id="err"></p>
+      </form>
+    </div>
+    <div class="card">
+      <h2>资金流向公示</h2>
+      <div id="sum" class="stats-grid"></div>
+      <table class="table" id="ledger"><thead><tr><th>时间</th><th>类型</th><th>摘要</th><th>金额（元）</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>捐款记录</h2>
+      <div class="list" id="dons"></div>
+    </div>
+    <div class="card">
+      <h2>进展</h2>
+      <div class="list" id="prog"></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    if (!requireLogin()) {}
+    const id = location.pathname.split("/").pop();
+    let me;
+    (async () => {
+      me = await currentMe(); fillUserBar(me);
+      const p = await api("/api/projects/" + id);
+      $("info").innerHTML = `<h2>${p.title} <span class="tag">${statusLabel(p.status)}</span></h2>
+        <p>${p.content}</p>
+        <p class="meta">受益：${p.beneficiary} · 分类 ${catLabel(p.category)} · 透明度 ${p.transparency_score}</p>
+        <p class="meta">已筹 ¥${yuan(p.raised_cents)} / 目标 ¥${yuan(p.goal_cents)} · 已支 ¥${yuan(p.spent_cents)} · 可用 ¥${yuan(p.available_cents)}</p>
+        <div class="bar"><i style="width:${p.progress_percent}%"></i></div>
+        <div class="actions"><button class="btn" id="follow">关注</button></div>`;
+      $("follow").onclick = async () => { try { await api("/api/projects/"+id+"/follow",{method:"POST"}); alert("已关注"); } catch(e){ alert(e.message);} };
+      const sum = await api("/api/projects/"+id+"/summary");
+      $("sum").innerHTML = `
+        <div class="stat"><div class="k">已筹</div><div class="v">¥${yuan(sum.raised_cents)}</div></div>
+        <div class="stat"><div class="k">已支</div><div class="v">¥${yuan(sum.spent_cents)}</div></div>
+        <div class="stat"><div class="k">可用</div><div class="v">¥${yuan(sum.available_cents)}</div></div>
+        <div class="stat"><div class="k">管理费</div><div class="v">¥${yuan(sum.admin_fee_cents)}</div></div>`;
+      const led = await api("/api/projects/"+id+"/ledger");
+      $("ledger").querySelector("tbody").innerHTML = led.map(e => `<tr>
+        <td>${(e.occurred_at||"").slice(0,10)}</td><td>${statusLabel(e.type)}</td><td>${e.title}</td>
+        <td>${e.type==="expense"||e.type==="refund"?"-":"+"}${yuan(e.amount_cents)}</td></tr>`).join("");
+      const dons = await api("/api/projects/"+id+"/donations");
+      $("dons").innerHTML = dons.map(d => `<div class="post"><strong>${d.donor_label}</strong> 捐 ¥${yuan(d.amount_cents)} <span class="tag">${statusLabel(d.status)}</span><p>${d.message||""}</p></div>`).join("") || "<p class='subtitle'>暂无公开捐款</p>";
+      const prog = await api("/api/projects/"+id+"/progress");
+      $("prog").innerHTML = prog.map(x => `<div class="post"><h3>${x.title}</h3><p>${x.content}</p></div>`).join("") || "<p class='subtitle'>暂无进展</p>";
+    })().catch(e => { if (String(e.message).includes("unauthorized")) location.href="/login"; });
+
+    $("donate").onsubmit = async (e) => {
+      e.preventDefault(); $("err").textContent="";
+      const fd = new FormData($("donate"));
+      const cents = Math.round(Number(fd.get("yuan")) * 100);
+      try {
+        await api("/api/projects/"+id+"/donate", { method:"POST", body: JSON.stringify({
+          amount_cents: cents, channel: fd.get("channel"), message: fd.get("message"), anonymous: fd.get("anonymous")==="on"
+        })});
+        location.reload();
+      } catch (ex) { $("err").textContent = ex.message; }
+    };
+  </script>
+</body>
+</html>
