@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"go05-charity-project/internal/model"
 )
@@ -75,6 +76,28 @@ func (m *MemoryStore) UpdateProject(ctx context.Context, p model.Project) (model
 	m.recalcOrgLocked(p.OrgID)
 	m.persist()
 	return p, nil
+}
+
+// UpdateProjectScore atomically refreshes only the transparency score and
+// updated timestamp of a project. It deliberately does not touch financial
+// aggregates (RaisedCents/SpentCents/DonorCount) so that two concurrent
+// donations cannot lose updates to those fields: each donation's financial
+// mutation happens under the store mutex inside ApplyConfirmedDonation, and
+// the score refresh no longer overwrites the whole project snapshot.
+func (m *MemoryStore) UpdateProjectScore(ctx context.Context, projectID string, score int, updatedAt time.Time) (model.Project, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	curP, ok := m.projects[projectID]
+	if !ok {
+		return model.Project{}, model.ErrNotFound
+	}
+	curP.TransparencyScore = score
+	curP.UpdatedAt = updatedAt
+	m.projects[projectID] = curP
+	m.recalcOrgLocked(curP.OrgID)
+	m.persist()
+	return curP, nil
 }
 
 func (m *MemoryStore) CountProjectsByOrgOpen(ctx context.Context, orgID string) (int, error) {

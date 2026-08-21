@@ -263,7 +263,8 @@ func (s *ExpenseService) refreshScore(ctx context.Context, p model.Project) {
 	}
 	org, _ := s.store.GetOrg(ctx, p.OrgID)
 	sum := money.Summarize(p, entries, org.IsVerified(), s.clock.Now(), s.limits.AdminFeeRateBP)
-	p.TransparencyScore = sum.TransparencyScore
-	p.UpdatedAt = s.clock.Now()
-	_, _ = s.store.UpdateProject(ctx, p)
+	// Only the transparency score is written back. Writing the whole project
+	// snapshot would clobber financial aggregates mutated by a concurrent
+	// donation/expense, losing the update.
+	_, _ = s.store.UpdateProjectScore(ctx, p.ID, sum.TransparencyScore, s.clock.Now())
 }
