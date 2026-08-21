@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,30 @@ import (
 type fakeClock struct{ t time.Time }
 
 func (f fakeClock) Now() time.Time { return f.t }
+
+type delayedFirstLedgerListStore struct {
+	store.Store
+	firstListed chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func (s *delayedFirstLedgerListStore) ListLedgerByProject(ctx context.Context, projectID string) ([]model.LedgerEntry, error) {
+	entries, err := s.Store.ListLedgerByProject(ctx, projectID)
+	blocked := false
+	s.once.Do(func() {
+		blocked = true
+		close(s.firstListed)
+	})
+	if blocked {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return entries, err
+}
 
 func testEnv(t *testing.T, now time.Time) (*Services, store.Store, *auth.PasswordHasher) {
 	t.Helper()
@@ -286,5 +311,60 @@ func TestOfflineDonationPendingUntilConfirm(t *testing.T) {
 	}
 	if confirmed.Status != model.DonationConfirmed {
 		t.Fatalf("status=%s", confirmed.Status)
+	}
+}
+
+func TestConcurrentDonationsKeepProjectTotalsConsistent(t *testing.T) {
+	now := time.Date(2026, 8, 21, 18, 0, 0, 0, time.UTC)
+	base := store.NewMemoryStore(nil, nil)
+	st := &delayedFirstLedgerListStore{
+		Store:       base,
+		firstListed: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	hasher := auth.NewPasswordHasher()
+	svc := NewServices(st, hasher, auth.NewSessionManager(time.Hour), fakeClock{t: now}, DefaultLimits())
+	ctx := context.Background()
+	orgUser := mustUser(t, st, hasher, "orgconcurrent", "org123x", model.RoleOrg)
+	_ = mustOrg(t, svc, st, orgUser)
+	donorA := mustUser(t, st, hasher, "donora", "pass123", model.RoleDonor)
+	donorB := mustUser(t, st, hasher, "donorb", "pass123", model.RoleDonor)
+	p := publishedProject(t, svc, st, orgUser, now)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Donation.Donate(ctx, donorA, p.ID, model.DonateRequest{
+			AmountCents: 10_000, Channel: model.ChannelWechat,
+		})
+		firstDone <- err
+	}()
+
+	<-st.firstListed
+	if _, err := svc.Donation.Donate(ctx, donorB, p.ID, model.DonateRequest{
+		AmountCents: 20_000, Channel: model.ChannelAlipay,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(st.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetProject(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := st.ListLedgerByProject(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ledgerRaised int64
+	for _, entry := range entries {
+		if entry.Type == model.LedgerIncome {
+			ledgerRaised += entry.AmountCents
+		}
+	}
+	if got.RaisedCents != ledgerRaised {
+		t.Fatalf("project raised=%d, ledger income=%d after two successful donations", got.RaisedCents, ledgerRaised)
 	}
 }
