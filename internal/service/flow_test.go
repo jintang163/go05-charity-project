@@ -30,6 +30,29 @@ type synchronizedDailySumStore struct {
 	allRead chan struct{}
 }
 
+type synchronizedAdminFeeSumStore struct {
+	store.Store
+	mu      sync.Mutex
+	reads   int
+	allRead chan struct{}
+}
+
+func (s *synchronizedAdminFeeSumStore) SumAdminFeeByProject(ctx context.Context, projectID string) (int64, error) {
+	sum, err := s.Store.SumAdminFeeByProject(ctx, projectID)
+	s.mu.Lock()
+	s.reads++
+	if s.reads == 2 {
+		close(s.allRead)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.allRead:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	return sum, err
+}
+
 func (s *synchronizedDailySumStore) SumConfirmedDonationsOnDay(ctx context.Context, donorID string, day time.Time) (int64, error) {
 	sum, err := s.Store.SumConfirmedDonationsOnDay(ctx, donorID, day)
 	s.mu.Lock()
@@ -436,5 +459,63 @@ func TestConcurrentDonationsRespectDailyLimit(t *testing.T) {
 	}
 	if successes != 1 || total > limits.DailyCapCents {
 		t.Fatalf("successful donations=%d, confirmed daily total=%d, cap=%d", successes, total, limits.DailyCapCents)
+	}
+}
+
+func TestConcurrentAdminFeesRespectRateLimit(t *testing.T) {
+	now := time.Date(2026, 8, 21, 20, 0, 0, 0, time.UTC)
+	base := store.NewMemoryStore(nil, nil)
+	st := &synchronizedAdminFeeSumStore{Store: base, allRead: make(chan struct{})}
+	hasher := auth.NewPasswordHasher()
+	limits := DefaultLimits()
+	svc := NewServices(st, hasher, auth.NewSessionManager(time.Hour), fakeClock{t: now}, limits)
+	ctx := context.Background()
+	orgUser := mustUser(t, st, hasher, "orgadminfee", "org123x", model.RoleOrg)
+	_ = mustOrg(t, svc, st, orgUser)
+	donor := mustUser(t, st, hasher, "feedonor", "pass123", model.RoleDonor)
+	p := publishedProject(t, svc, st, orgUser, now)
+	if _, err := svc.Donation.Donate(ctx, donor, p.ID, model.DonateRequest{
+		AmountCents: 100_000, Channel: model.ChannelWechat,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orgUser, _ = st.GetUserByID(ctx, orgUser.ID)
+	expenses := make([]model.PublicExpense, 0, 2)
+	for i := 0; i < 2; i++ {
+		expense, err := svc.Expense.Create(ctx, orgUser, p.ID, model.CreateExpenseRequest{
+			Title: "并发管理费", Category: model.ExpAdminFee, AmountCents: 6_000, Beneficiary: "公益机构",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expenses = append(expenses, expense)
+	}
+
+	errs := make(chan error, 2)
+	for _, expense := range expenses {
+		expenseID := expense.ID
+		go func() {
+			_, err := svc.Expense.Publish(ctx, orgUser, expenseID)
+			errs <- err
+		}()
+	}
+	var successes int
+	for i := 0; i < 2; i++ {
+		err := <-errs
+		if err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(err, model.ErrAdminFeeExceeded) {
+			t.Fatalf("unexpected publish error: %v", err)
+		}
+	}
+	total, err := st.SumAdminFeeByProject(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cap := int64(100_000) * int64(limits.AdminFeeRateBP) / 10_000
+	if successes != 1 || total > cap {
+		t.Fatalf("published admin fees=%d, admin fee total=%d, cap=%d", successes, total, cap)
 	}
 }
