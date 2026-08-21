@@ -78,7 +78,14 @@ type Store interface {
 	CreateAudit(ctx context.Context, a model.AuditLog) (model.AuditLog, error)
 	ListAudits(ctx context.Context, targetType, targetID string) ([]model.AuditLog, error)
 
-	ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt) (model.Donation, model.Project, error)
+	// ApplyConfirmedDonation atomically confirms a donation under the store
+	// write lock. When dailyCapCents > 0 it re-checks the donor's confirmed
+	// day total (excluding this donation) plus the new amount against the cap
+	// BEFORE any state mutation; exceeding it returns ErrDailyCapExceeded with
+	// nothing persisted. This collapses the check-then-act in DonationService
+	// into one locked operation so two concurrent instant donations can never
+	// both pass the cap and land.
+	ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt, dailyCapCents int64) (model.Donation, model.Project, error)
 	ApplyRefund(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry) (model.Donation, model.Project, error)
 	ApplyPublishedExpense(ctx context.Context, e model.Expense, p model.Project, entry model.LedgerEntry) (model.Expense, model.Project, error)
 	ApplyMatching(ctx context.Context, p model.Project, entry model.LedgerEntry) (model.Project, error)

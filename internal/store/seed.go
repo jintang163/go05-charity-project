@@ -155,7 +155,7 @@ func SeedDemo(ctx context.Context, st Store, hasher *auth.PasswordHasher) error 
 		OccurredAt:  confirmed,
 		CreatedAt:   confirmed,
 	}
-	if _, _, err := st.ApplyConfirmedDonation(ctx, don, proj, alice, entry, nil); err != nil {
+	if _, _, err := st.ApplyConfirmedDonation(ctx, don, proj, alice, entry, nil, 0); err != nil {
 		return err
 	}
 	proj, err = st.GetProject(ctx, proj.ID)
