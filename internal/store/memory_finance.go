@@ -204,13 +204,43 @@ func (m *MemoryStore) CountDraftExpensesByOrg(ctx context.Context, orgID string)
 	return n, nil
 }
 
-func (m *MemoryStore) ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt) (model.Donation, model.Project, error) {
+func (m *MemoryStore) ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt, dailyCapCents int64) (model.Donation, model.Project, error) {
 	_ = ctx
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	curP, ok := m.projects[p.ID]
 	if !ok {
 		return model.Donation{}, model.Project{}, model.ErrNotFound
+	}
+	// Re-check the donor's confirmed day total under the write lock, together
+	// with the ledger mutation, so a concurrent instant donation cannot also
+	// pass the cap. day totals count confirmed and pending donations on the
+	// same calendar day as ConfirmedAt (falling back to CreatedAt); the new
+	// donation is excluded by ID since it is not persisted yet.
+	if dailyCapCents > 0 {
+		day := d.UpdatedAt
+		if d.ConfirmedAt != nil {
+			day = *d.ConfirmedAt
+		}
+		var daySum int64
+		for _, dd := range m.donations {
+			if dd.DonorID != d.DonorID || dd.ID == d.ID {
+				continue
+			}
+			if dd.Status != model.DonationConfirmed && dd.Status != model.DonationPending {
+				continue
+			}
+			t := dd.CreatedAt
+			if dd.ConfirmedAt != nil {
+				t = *dd.ConfirmedAt
+			}
+			if sameDay(t, day) {
+				daySum += dd.AmountCents
+			}
+		}
+		if daySum+d.AmountCents > dailyCapCents {
+			return model.Donation{}, model.Project{}, model.ErrDailyCapExceeded
+		}
 	}
 	if entry.ID == "" {
 		entry.ID = m.idGen(model.LedgerIDPrefix)

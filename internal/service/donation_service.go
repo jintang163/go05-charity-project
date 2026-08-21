@@ -122,7 +122,7 @@ func (s *DonationService) applyConfirm(ctx context.Context, actor model.User, p 
 		}
 		d.ReceiptCode = code
 	}
-	saved, proj, err := s.store.ApplyConfirmedDonation(ctx, d, p, actor, entry, rec)
+	saved, proj, err := s.store.ApplyConfirmedDonation(ctx, d, p, actor, entry, rec, s.limits.DailyCapCents)
 	if err != nil {
 		return model.PublicDonation{}, err
 	}
