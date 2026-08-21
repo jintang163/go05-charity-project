@@ -25,6 +25,11 @@ type Store interface {
 	GetProject(ctx context.Context, id string) (model.Project, error)
 	ListProjects(ctx context.Context, f model.ProjectFilter) ([]model.Project, error)
 	UpdateProject(ctx context.Context, p model.Project) (model.Project, error)
+	// UpdateProjectScore atomically refreshes only the transparency score and
+	// updated timestamp of a project. It must NOT overwrite financial aggregates
+	// (RaisedCents/SpentCents/DonorCount) so that concurrent donations don't
+	// lose updates to those fields.
+	UpdateProjectScore(ctx context.Context, projectID string, score int, updatedAt time.Time) (model.Project, error)
 	CountProjectsByOrgOpen(ctx context.Context, orgID string) (int, error)
 	CountProjectsByStatus(ctx context.Context) (map[model.ProjectStatus]int, error)
 

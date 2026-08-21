@@ -318,8 +318,13 @@ func (s *DonationService) refreshScore(ctx context.Context, p model.Project) {
 		return
 	}
 	org, _ := s.store.GetOrg(ctx, p.OrgID)
+	// Use the freshly listed ledger entries to recompute the raised/available
+	// figures instead of the project snapshot handed in, so the transparency
+	// score reflects the latest ledger state even when a concurrent donation
+	// landed between the financial mutation and this refresh.
 	sum := money.Summarize(p, entries, org.IsVerified(), s.clock.Now(), s.limits.AdminFeeRateBP)
-	p.TransparencyScore = sum.TransparencyScore
-	p.UpdatedAt = s.clock.Now()
-	_, _ = s.store.UpdateProject(ctx, p)
+	// Only the score (a derived, non-financial field) is written back. Writing
+	// the whole project snapshot here would clobber RaisedCents/SpentCents/
+	// DonorCount mutated by a concurrent donation, losing the update.
+	_, _ = s.store.UpdateProjectScore(ctx, p.ID, sum.TransparencyScore, s.clock.Now())
 }
