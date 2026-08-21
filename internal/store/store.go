@@ -79,12 +79,15 @@ type Store interface {
 	ListAudits(ctx context.Context, targetType, targetID string) ([]model.AuditLog, error)
 
 	// ApplyConfirmedDonation atomically confirms a donation under the store
-	// write lock. When dailyCapCents > 0 it re-checks the donor's confirmed
-	// day total (excluding this donation) plus the new amount against the cap
-	// BEFORE any state mutation; exceeding it returns ErrDailyCapExceeded with
-	// nothing persisted. This collapses the check-then-act in DonationService
-	// into one locked operation so two concurrent instant donations can never
-	// both pass the cap and land.
+	// write lock. It re-reads the live donation record and rejects the
+	// transition when it is no longer pending (returns ErrDonationNotPending
+	// with nothing persisted), so a single donation can only be confirmed once
+	// even under concurrent ConfirmOffline requests. When dailyCapCents > 0 it
+	// also re-checks the donor's confirmed day total (excluding this donation)
+	// plus the new amount against the cap BEFORE any state mutation; exceeding
+	// it returns ErrDailyCapExceeded with nothing persisted. This collapses the
+	// check-then-act in DonationService into one locked operation so two
+	// concurrent instant donations can never both pass the cap and land.
 	ApplyConfirmedDonation(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry, rec *model.Receipt, dailyCapCents int64) (model.Donation, model.Project, error)
 	ApplyRefund(ctx context.Context, d model.Donation, p model.Project, u model.User, entry model.LedgerEntry) (model.Donation, model.Project, error)
 	// ApplyPublishedExpense atomically publishes an expense under the store
