@@ -213,6 +213,19 @@ func (m *MemoryStore) ApplyConfirmedDonation(ctx context.Context, d model.Donati
 	if !ok {
 		return model.Donation{}, model.Project{}, model.ErrNotFound
 	}
+	// Re-check the donation's status under the write lock, together with the
+	// ledger mutation. The status guard in DonationService.ConfirmOffline is a
+	// check-then-act over a stale snapshot: two concurrent confirmations of the
+	// same pending offline donation both read "pending", both pass, and both
+	// land under the lock below. Re-reading the live record here collapses that
+	// race into one locked operation so a donation can only transition out of
+	// pending once; the second confirmation observes the now-confirmed record
+	// and returns a conflict without persisting any ledger entry or raised bump.
+	if existing, ok := m.donations[d.ID]; ok {
+		if existing.Status != model.DonationPending {
+			return model.Donation{}, model.Project{}, model.ErrDonationNotPending
+		}
+	}
 	// Re-check the donor's confirmed day total under the write lock, together
 	// with the ledger mutation, so a concurrent instant donation cannot also
 	// pass the cap. day totals count confirmed and pending donations on the
