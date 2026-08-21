@@ -23,6 +23,29 @@ type delayedFirstLedgerListStore struct {
 	once        sync.Once
 }
 
+type synchronizedDailySumStore struct {
+	store.Store
+	mu      sync.Mutex
+	reads   int
+	allRead chan struct{}
+}
+
+func (s *synchronizedDailySumStore) SumConfirmedDonationsOnDay(ctx context.Context, donorID string, day time.Time) (int64, error) {
+	sum, err := s.Store.SumConfirmedDonationsOnDay(ctx, donorID, day)
+	s.mu.Lock()
+	s.reads++
+	if s.reads == 2 {
+		close(s.allRead)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.allRead:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	return sum, err
+}
+
 func (s *delayedFirstLedgerListStore) ListLedgerByProject(ctx context.Context, projectID string) ([]model.LedgerEntry, error) {
 	entries, err := s.Store.ListLedgerByProject(ctx, projectID)
 	blocked := false
@@ -366,5 +389,52 @@ func TestConcurrentDonationsKeepProjectTotalsConsistent(t *testing.T) {
 	}
 	if got.RaisedCents != ledgerRaised {
 		t.Fatalf("project raised=%d, ledger income=%d after two successful donations", got.RaisedCents, ledgerRaised)
+	}
+}
+
+func TestConcurrentDonationsRespectDailyLimit(t *testing.T) {
+	now := time.Date(2026, 8, 21, 19, 0, 0, 0, time.UTC)
+	base := store.NewMemoryStore(nil, nil)
+	st := &synchronizedDailySumStore{Store: base, allRead: make(chan struct{})}
+	hasher := auth.NewPasswordHasher()
+	limits := DefaultLimits()
+	limits.DailyCapCents = 5_000_000
+	svc := NewServices(st, hasher, auth.NewSessionManager(time.Hour), fakeClock{t: now}, limits)
+	ctx := context.Background()
+	orgUser := mustUser(t, st, hasher, "orgdailycap", "org123x", model.RoleOrg)
+	_ = mustOrg(t, svc, st, orgUser)
+	donor := mustUser(t, st, hasher, "capdonor", "pass123", model.RoleDonor)
+	p := publishedProject(t, svc, st, orgUser, now)
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := svc.Donation.Donate(ctx, donor, p.ID, model.DonateRequest{
+				AmountCents: 3_000_000, Channel: model.ChannelWechat,
+			})
+			errs <- err
+		}()
+	}
+	var successes int
+	for i := 0; i < 2; i++ {
+		err := <-errs
+		if err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(err, model.ErrDailyCapExceeded) {
+			t.Fatalf("unexpected donation error: %v", err)
+		}
+	}
+	donations, err := st.ListDonations(ctx, model.DonationFilter{DonorID: donor.ID, Status: model.DonationConfirmed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, donation := range donations {
+		total += donation.AmountCents
+	}
+	if successes != 1 || total > limits.DailyCapCents {
+		t.Fatalf("successful donations=%d, confirmed daily total=%d, cap=%d", successes, total, limits.DailyCapCents)
 	}
 }
