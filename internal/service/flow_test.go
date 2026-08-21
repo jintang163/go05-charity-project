@@ -37,6 +37,33 @@ type synchronizedAdminFeeSumStore struct {
 	allRead chan struct{}
 }
 
+type synchronizedDonationReadStore struct {
+	store.Store
+	target  string
+	mu      sync.Mutex
+	reads   int
+	allRead chan struct{}
+}
+
+func (s *synchronizedDonationReadStore) GetDonation(ctx context.Context, id string) (model.Donation, error) {
+	d, err := s.Store.GetDonation(ctx, id)
+	if id != s.target {
+		return d, err
+	}
+	s.mu.Lock()
+	s.reads++
+	if s.reads == 2 {
+		close(s.allRead)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.allRead:
+	case <-ctx.Done():
+		return model.Donation{}, ctx.Err()
+	}
+	return d, err
+}
+
 func (s *synchronizedAdminFeeSumStore) SumAdminFeeByProject(ctx context.Context, projectID string) (int64, error) {
 	sum, err := s.Store.SumAdminFeeByProject(ctx, projectID)
 	s.mu.Lock()
@@ -517,5 +544,33 @@ func TestConcurrentAdminFeesRespectRateLimit(t *testing.T) {
 	cap := int64(100_000) * int64(limits.AdminFeeRateBP) / 10_000
 	if successes != 1 || total > cap {
 		t.Fatalf("published admin fees=%d, admin fee total=%d, cap=%d", successes, total, cap)
+	}
+}
+
+func TestConcurrentOfflineConfirmationIsIdempotent(t *testing.T) {
+	now := time.Date(2026, 8, 21, 21, 0, 0, 0, time.UTC)
+	base := store.NewMemoryStore(nil, nil)
+	st := &synchronizedDonationReadStore{Store: base, allRead: make(chan struct{})}
+	hasher := auth.NewPasswordHasher()
+	svc := NewServices(st, hasher, auth.NewSessionManager(time.Hour), fakeClock{t: now}, DefaultLimits())
+	ctx := context.Background()
+	orgUser := mustUser(t, st, hasher, "orgconfirm", "org123x", model.RoleOrg)
+	_ = mustOrg(t, svc, st, orgUser)
+	donor := mustUser(t, st, hasher, "offlinedonor", "pass123", model.RoleDonor)
+	p := publishedProject(t, svc, st, orgUser, now)
+	pending, err := svc.Donation.Donate(ctx, donor, p.ID, model.DonateRequest{AmountCents: 20_000, Channel: model.ChannelOffline})
+	if err != nil { t.Fatal(err) }
+	st.target = pending.ID
+	orgUser, _ = st.GetUserByID(ctx, orgUser.ID)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ { go func() { _, err := svc.Donation.ConfirmOffline(ctx, orgUser, pending.ID); errs <- err }() }
+	var successes int
+	for i := 0; i < 2; i++ { if err := <-errs; err == nil { successes++ } else if !errors.Is(err, model.ErrDonationNotPending) { t.Fatalf("unexpected confirmation error: %v", err) } }
+	project, err := st.GetProject(ctx, p.ID); if err != nil { t.Fatal(err) }
+	entries, err := st.ListLedgerByProject(ctx, p.ID); if err != nil { t.Fatal(err) }
+	var incomeCount int
+	for _, entry := range entries { if entry.RefType == "donation" { incomeCount++ } }
+	if successes != 1 || project.RaisedCents != pending.AmountCents || incomeCount != 1 {
+		t.Fatalf("successful confirmations=%d, raised=%d, donation ledger entries=%d", successes, project.RaisedCents, incomeCount)
 	}
 }
